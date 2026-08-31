@@ -1,0 +1,8 @@
+name = "household-board-api"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "household-board"
+database_id = "a91a65a9-5768-43e3-976a-777f48774f08"
