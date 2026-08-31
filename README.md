@@ -17,5 +17,5 @@ panel to add/edit/delete everything.
 
 - [x] D1 database + tables created (`events`, `tasks`, `dinners`)
 - [x] Worker API written (`worker/src/index.js`)
-- [ ] Worker deployed (run `npx wrangler deploy` from `worker/`)
-- [ ] Dashboard wired to call the deployed Worker instead of `window.storage`
+- [x] Worker deployed: https://household-board-api.efmooney.workers.dev
+- [x] Dashboard wired to call the deployed Worker instead of `window.storage`
