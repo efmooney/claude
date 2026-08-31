@@ -31,40 +31,21 @@ function niceDate(key) {
   const d = fromKey(key);
   return `${WEEKDAY_SHORT[d.getDay()]}, ${MONTH_SHORT[d.getMonth()]} ${d.getDate()}`;
 }
-function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+const API_BASE = "https://household-board-api.efmooney.workers.dev";
 
-function seedData() {
-  const today = startOfToday();
-  const k = (n) => toKey(addDays(today, n));
-  return {
-    events: [
-      { id: genId(), date: k(0), time: "08:30", person: "Family", title: "Drop kids at school" },
-      { id: genId(), date: k(0), time: "17:00", person: "Ezric", title: "Soccer practice" },
-      { id: genId(), date: k(1), time: "12:00", person: "Angela", title: "Lunch with Priya" },
-      { id: genId(), date: k(1), time: "19:00", person: "Eric", title: "Board game night" },
-      { id: genId(), date: k(2), time: "09:00", person: "Family", title: "Dentist — Ezric" },
-      { id: genId(), date: k(4), time: "18:30", person: "Family", title: "Movie night" },
-      { id: genId(), date: k(6), time: "10:00", person: "Eric", title: "Car service" },
-    ],
-    tasks: [
-      { id: genId(), person: "Eric", text: "Pay the electric bill", done: false },
-      { id: genId(), person: "Eric", text: "Mow the lawn", done: false },
-      { id: genId(), person: "Angela", text: "Book dentist follow-up", done: false },
-      { id: genId(), person: "Angela", text: "Return library books", done: true },
-      { id: genId(), person: "Ezric", text: "Finish reading log", done: false },
-      { id: genId(), person: "Ezric", text: "Pack soccer bag", done: false },
-    ],
-    dinners: [
-      { id: genId(), date: k(0), meal: "Tacos" },
-      { id: genId(), date: k(1), meal: "Sheet-pan chicken" },
-      { id: genId(), date: k(2), meal: "Pasta night" },
-      { id: genId(), date: k(4), meal: "Leftovers" },
-      { id: genId(), date: k(5), meal: "Pizza" },
-    ],
-  };
+async function apiRequest(path, method = "GET", body) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    let msg = `Request failed (${res.status})`;
+    try { const j = await res.json(); if (j.error) msg = j.error; } catch (e) {}
+    throw new Error(msg);
+  }
+  return res.json();
 }
-
-const STORAGE_KEY = "household-board-data";
 
 export default function HouseholdBoard() {
   const [data, setData] = useState(null);
@@ -80,46 +61,39 @@ export default function HouseholdBoard() {
   const [dinnerForm, setDinnerForm] = useState({ date: toKey(startOfToday()), meal: "" });
   const [editingDinnerId, setEditingDinnerId] = useState(null);
 
-  const initialized = useRef(false);
+  const [loadError, setLoadError] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const result = await window.storage.get(STORAGE_KEY, false);
-        if (result && result.value) {
-          setData(JSON.parse(result.value));
-        } else {
-          const seed = seedData();
-          setData(seed);
-          await window.storage.set(STORAGE_KEY, JSON.stringify(seed), false);
-        }
-      } catch (e) {
-        const seed = seedData();
-        setData(seed);
-        try { await window.storage.set(STORAGE_KEY, JSON.stringify(seed), false); } catch (e2) {}
-      } finally {
-        setLoading(false);
-        initialized.current = true;
-      }
-    })();
-  }, []);
+  async function loadData() {
+    setLoading(true);
+    setLoadError(false);
+    try {
+      const result = await apiRequest("/all");
+      setData(result);
+    } catch (e) {
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
+  }
 
-  useEffect(() => {
-    if (!initialized.current || !data) return;
-    (async () => {
-      try {
-        const res = await window.storage.set(STORAGE_KEY, JSON.stringify(data), false);
-        setSaveError(!res);
-      } catch (e) {
-        setSaveError(true);
-      }
-    })();
-  }, [data]);
+  useEffect(() => { loadData(); }, []);
 
-  if (loading || !data) {
+  if (loading) {
     return (
       <div style={{ fontFamily: "Inter, sans-serif", padding: "3rem", textAlign: "center", color: "#8A8676" }}>
         Loading the board…
+      </div>
+    );
+  }
+
+  if (loadError || !data) {
+    return (
+      <div style={{ fontFamily: "Inter, sans-serif", padding: "3rem", textAlign: "center", color: "#8A8676" }}>
+        <div style={{ marginBottom: "12px" }}>Couldn't reach the board's server.</div>
+        <button onClick={loadData} style={{
+          cursor: "pointer", border: "1px solid #DAD4C4", background: "#FFF", borderRadius: "7px",
+          padding: "7px 14px", fontSize: "13px", color: "#24272B",
+        }}>Try again</button>
       </div>
     );
   }
@@ -131,18 +105,19 @@ export default function HouseholdBoard() {
   }
 
   // ---- Events ----
-  function submitEvent() {
+  async function submitEvent() {
     if (!eventForm.title.trim() || !eventForm.date) return;
-    updateData((prev) => {
-      const events = [...prev.events];
+    const payload = { ...eventForm, title: eventForm.title.trim() };
+    try {
       if (editingEventId) {
-        const idx = events.findIndex((e) => e.id === editingEventId);
-        if (idx !== -1) events[idx] = { ...events[idx], ...eventForm, title: eventForm.title.trim() };
+        const saved = await apiRequest(`/events/${editingEventId}`, "PUT", payload);
+        updateData((prev) => ({ ...prev, events: prev.events.map((e) => (e.id === editingEventId ? { ...e, ...saved } : e)) }));
       } else {
-        events.push({ id: genId(), ...eventForm, title: eventForm.title.trim() });
+        const saved = await apiRequest("/events", "POST", payload);
+        updateData((prev) => ({ ...prev, events: [...prev.events, saved] }));
       }
-      return { ...prev, events };
-    });
+      setSaveError(false);
+    } catch (e) { setSaveError(true); return; }
     setEventForm({ date: toKey(startOfToday()), time: "", person: "Family", title: "" });
     setEditingEventId(null);
   }
@@ -152,24 +127,33 @@ export default function HouseholdBoard() {
     setActiveTab("events");
     setManageOpen(true);
   }
-  function deleteEvent(id) {
+  async function deleteEvent(id) {
+    const prevEvents = data.events;
     updateData((prev) => ({ ...prev, events: prev.events.filter((e) => e.id !== id) }));
+    try {
+      await apiRequest(`/events/${id}`, "DELETE");
+      setSaveError(false);
+    } catch (e) {
+      setSaveError(true);
+      updateData((prev) => ({ ...prev, events: prevEvents }));
+    }
     if (editingEventId === id) { setEditingEventId(null); setEventForm({ date: toKey(startOfToday()), time: "", person: "Family", title: "" }); }
   }
 
   // ---- Tasks ----
-  function submitTask() {
+  async function submitTask() {
     if (!taskForm.text.trim()) return;
-    updateData((prev) => {
-      const tasks = [...prev.tasks];
+    const text = taskForm.text.trim();
+    try {
       if (editingTaskId) {
-        const idx = tasks.findIndex((t) => t.id === editingTaskId);
-        if (idx !== -1) tasks[idx] = { ...tasks[idx], person: taskForm.person, text: taskForm.text.trim() };
+        const saved = await apiRequest(`/tasks/${editingTaskId}`, "PUT", { person: taskForm.person, text });
+        updateData((prev) => ({ ...prev, tasks: prev.tasks.map((t) => (t.id === editingTaskId ? { ...t, ...saved } : t)) }));
       } else {
-        tasks.push({ id: genId(), person: taskForm.person, text: taskForm.text.trim(), done: false });
+        const saved = await apiRequest("/tasks", "POST", { person: taskForm.person, text, done: false });
+        updateData((prev) => ({ ...prev, tasks: [...prev.tasks, saved] }));
       }
-      return { ...prev, tasks };
-    });
+      setSaveError(false);
+    } catch (e) { setSaveError(true); return; }
     setTaskForm({ person: "Eric", text: "" });
     setEditingTaskId(null);
   }
@@ -179,30 +163,46 @@ export default function HouseholdBoard() {
     setActiveTab("tasks");
     setManageOpen(true);
   }
-  function deleteTask(id) {
+  async function deleteTask(id) {
+    const prevTasks = data.tasks;
     updateData((prev) => ({ ...prev, tasks: prev.tasks.filter((t) => t.id !== id) }));
+    try {
+      await apiRequest(`/tasks/${id}`, "DELETE");
+      setSaveError(false);
+    } catch (e) {
+      setSaveError(true);
+      updateData((prev) => ({ ...prev, tasks: prevTasks }));
+    }
     if (editingTaskId === id) { setEditingTaskId(null); setTaskForm({ person: "Eric", text: "" }); }
   }
-  function toggleTask(id) {
-    updateData((prev) => ({
-      ...prev,
-      tasks: prev.tasks.map((t) => (t.id === id ? { ...t, done: !t.done } : t)),
-    }));
+  async function toggleTask(id) {
+    const target = data.tasks.find((t) => t.id === id);
+    if (!target) return;
+    const nextDone = !target.done;
+    updateData((prev) => ({ ...prev, tasks: prev.tasks.map((t) => (t.id === id ? { ...t, done: nextDone } : t)) }));
+    try {
+      await apiRequest(`/tasks/${id}`, "PUT", { done: nextDone });
+      setSaveError(false);
+    } catch (e) {
+      setSaveError(true);
+      updateData((prev) => ({ ...prev, tasks: prev.tasks.map((t) => (t.id === id ? { ...t, done: !nextDone } : t)) }));
+    }
   }
 
   // ---- Dinners ----
-  function submitDinner() {
+  async function submitDinner() {
     if (!dinnerForm.meal.trim() || !dinnerForm.date) return;
-    updateData((prev) => {
-      const dinners = [...prev.dinners];
+    const payload = { ...dinnerForm, meal: dinnerForm.meal.trim() };
+    try {
       if (editingDinnerId) {
-        const idx = dinners.findIndex((d) => d.id === editingDinnerId);
-        if (idx !== -1) dinners[idx] = { ...dinners[idx], ...dinnerForm, meal: dinnerForm.meal.trim() };
+        const saved = await apiRequest(`/dinners/${editingDinnerId}`, "PUT", payload);
+        updateData((prev) => ({ ...prev, dinners: prev.dinners.map((d) => (d.id === editingDinnerId ? { ...d, ...saved } : d)) }));
       } else {
-        dinners.push({ id: genId(), ...dinnerForm, meal: dinnerForm.meal.trim() });
+        const saved = await apiRequest("/dinners", "POST", payload);
+        updateData((prev) => ({ ...prev, dinners: [...prev.dinners, saved] }));
       }
-      return { ...prev, dinners };
-    });
+      setSaveError(false);
+    } catch (e) { setSaveError(true); return; }
     setDinnerForm({ date: toKey(startOfToday()), meal: "" });
     setEditingDinnerId(null);
   }
@@ -212,8 +212,16 @@ export default function HouseholdBoard() {
     setActiveTab("dinners");
     setManageOpen(true);
   }
-  function deleteDinner(id) {
+  async function deleteDinner(id) {
+    const prevDinners = data.dinners;
     updateData((prev) => ({ ...prev, dinners: prev.dinners.filter((d) => d.id !== id) }));
+    try {
+      await apiRequest(`/dinners/${id}`, "DELETE");
+      setSaveError(false);
+    } catch (e) {
+      setSaveError(true);
+      updateData((prev) => ({ ...prev, dinners: prevDinners }));
+    }
     if (editingDinnerId === id) { setEditingDinnerId(null); setDinnerForm({ date: toKey(startOfToday()), meal: "" }); }
   }
 
@@ -222,11 +230,6 @@ export default function HouseholdBoard() {
     if (prefillDate && tab === "events") setEventForm((f) => ({ ...f, date: prefillDate }));
     if (prefillDate && tab === "dinners") setDinnerForm((f) => ({ ...f, date: prefillDate }));
     setManageOpen(true);
-  }
-
-  function resetAll() {
-    const seed = seedData();
-    setData(seed);
   }
 
   const nextThree = [0, 1, 2].map((n) => toKey(addDays(today, n)));
@@ -422,7 +425,7 @@ export default function HouseholdBoard() {
 
       {saveError && (
         <div style={{ position: "fixed", bottom: 12, left: "50%", transform: "translateX(-50%)", background: "#B94A3C", color: "#FFF", fontSize: "12px", padding: "6px 12px", borderRadius: "6px" }}>
-          Couldn't save your last change. It may not persist.
+          Couldn't reach the server for your last change. It may not have saved.
         </div>
       )}
 
@@ -540,10 +543,6 @@ export default function HouseholdBoard() {
                   {data.dinners.length === 0 && <EmptyNote text="No dinners planned yet. Add one above." />}
                 </>
               )}
-
-              <button className="hb-btn" onClick={resetAll} style={{ marginTop: "1.5rem", fontSize: "11.5px", color: "#B94A3C", textDecoration: "underline" }}>
-                Reset the board to example data
-              </button>
             </div>
           </div>
         </div>
